@@ -1,17 +1,17 @@
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 from sqlalchemy import select
-from datetime import date
-from models import Queue, User
+from datetime import date, datetime, timedelta
+from models import Queue, User, ChatMessage
 from schemas import QueueCreate
 
-async def create_queue(
-    db: AsyncSession,
-    queue_data: QueueCreate,
-    creator_id: int
-):
-    result = await db.execute(select(User).where(User.u_id == creator_id))
-    user = result.scalar_one_or_none()
-    
+def update_activity(db: Session, queue: Queue):
+    #Обновляет время последней активности
+    queue.last_activity = datetime.now()
+    db.add(queue)
+    db.commit()
+
+def create_queue(db: Session, queue_data: QueueCreate, creator_id: int):
+    user = db.execute(select(User).where(User.u_id == creator_id)).scalar_one_or_none()
     if not user:
         raise ValueError("Пользователь не найден")
     
@@ -21,107 +21,110 @@ async def create_queue(
         q_img_path=queue_data.q_img_path,
         q_creation_date=date.today(),
         q_creator_id=creator_id,
-        q_sequence=[]  # Пустой список участников
+        q_sequence=[],
+        last_activity=datetime.now()  # Устанавливаем время создания
     )
     
     db.add(new_queue)
-    await db.flush()
-    await db.refresh(new_queue)
-    
+    db.commit()
+    db.refresh(new_queue)
     return new_queue
 
-
-async def add_to_queue(
-    db: AsyncSession,
-    queue_id: int,
-    user_id: int
-):
-    # Получаем очередь
-    result = await db.execute(select(Queue).where(Queue.q_id == queue_id))
-    queue = result.scalar_one_or_none()
-    
+def add_to_queue(db: Session, queue_id: int, user_id: int):
+    queue = db.execute(select(Queue).where(Queue.q_id == queue_id)).scalar_one_or_none()
     if not queue:
         raise ValueError("Очередь не найдена")
     
-    # Проверяем, не в очереди ли уже
-    if user_id in queue.q_sequence:
+    user = db.execute(select(User).where(User.u_id == user_id)).scalar_one_or_none()
+    if not user:
+        raise ValueError("Пользователь не найден")
+    
+    current_sequence = queue.q_sequence if queue.q_sequence else []
+    
+    if user_id in current_sequence:
         raise ValueError("Пользователь уже в очереди")
     
-    # Добавляем в конец
-    queue.q_sequence.append(user_id)
+    new_sequence = current_sequence + [user_id]
+    queue.q_sequence = new_sequence
+    queue.last_activity = datetime.now()  # Обновляем активность
     
-    await db.flush()
-    await db.refresh(queue)
+    db.add(queue)
+    db.commit()
+    db.refresh(queue)
     
-    return {"position": len(queue.q_sequence), "queue": queue.q_sequence}
+    return {
+        "status": "success",
+        "position": len(queue.q_sequence),
+        "queue_id": queue_id,
+        "user_id": user_id,
+        "participants_count": len(queue.q_sequence)
+    }
 
-
-async def leave_queue(
-    db: AsyncSession,
-    queue_id: int,
-    user_id: int
-):
-    result = await db.execute(select(Queue).where(Queue.q_id == queue_id))
-    queue = result.scalar_one_or_none()
-    
+def leave_queue(db: Session, queue_id: int, user_id: int):
+    queue = db.execute(select(Queue).where(Queue.q_id == queue_id)).scalar_one_or_none()
     if not queue:
         raise ValueError("Очередь не найдена")
     
-    if user_id not in queue.q_sequence:
+    current_sequence = queue.q_sequence if queue.q_sequence else []
+    
+    if user_id not in current_sequence:
         raise ValueError("Пользователь не в очереди")
     
-    # Удаляем пользователя
-    queue.q_sequence.remove(user_id)
+    new_sequence = [uid for uid in current_sequence if uid != user_id]
+    queue.q_sequence = new_sequence
+    queue.last_activity = datetime.now()  # Обновляем активность
     
-    await db.flush()
-    await db.refresh(queue)
+    db.add(queue)
+    db.commit()
+    db.refresh(queue)
     
-    return {"message": "Вы вышли из очереди", "queue": queue.q_sequence}
+    return {
+        "status": "success",
+        "message": "Вы вышли из очереди",
+        "queue_id": queue_id,
+        "user_id": user_id,
+        "participants_count": len(queue.q_sequence)
+    }
 
-
-async def rejoin_queue(
-    db: AsyncSession,
-    queue_id: int,
-    user_id: int
-):
-    result = await db.execute(select(Queue).where(Queue.q_id == queue_id))
-    queue = result.scalar_one_or_none()
-    
+def rejoin_queue(db: Session, queue_id: int, user_id: int):
+    queue = db.execute(select(Queue).where(Queue.q_id == queue_id)).scalar_one_or_none()
     if not queue:
         raise ValueError("Очередь не найдена")
     
-    if user_id not in queue.q_sequence:
+    current_sequence = queue.q_sequence if queue.q_sequence else []
+    
+    if user_id not in current_sequence:
         raise ValueError("Пользователь не в очереди")
     
-    # Удаляем с текущей позиции
-    queue.q_sequence.remove(user_id)
-    # Добавляем в конец
-    queue.q_sequence.append(user_id)
+    without_user = [uid for uid in current_sequence if uid != user_id]
+    new_sequence = without_user + [user_id]
+    queue.q_sequence = new_sequence
+    queue.last_activity = datetime.now()  # Обновляем активность
     
-    await db.flush()
-    await db.refresh(queue)
+    db.add(queue)
+    db.commit()
+    db.refresh(queue)
     
-    return {"message": "Перемещены в конец", "new_position": len(queue.q_sequence)}
+    return {
+        "status": "success",
+        "message": "Перемещены в конец",
+        "new_position": len(queue.q_sequence),
+        "participants_count": len(queue.q_sequence)
+    }
 
-
-async def send_message(
-    db: AsyncSession,
-    queue_id: int,
-    user_id: int,
-    text: str
-):
-    from models import ChatMessage
-    from datetime import datetime
-    
-    # Проверяем очередь
-    queue_result = await db.execute(select(Queue).where(Queue.q_id == queue_id))
-    if not queue_result.scalar_one_or_none():
+def send_message(db: Session, queue_id: int, user_id: int, text: str):
+    queue = db.execute(select(Queue).where(Queue.q_id == queue_id)).scalar_one_or_none()
+    if not queue:
         raise ValueError("Очередь не найдена")
     
-    # Проверяем пользователя
-    user_result = await db.execute(select(User).where(User.u_id == user_id))
-    if not user_result.scalar_one_or_none():
-        raise ValueError("Пользователь не найден")
+    participants = queue.q_sequence if queue.q_sequence else []
+    
+    if user_id not in participants and queue.q_creator_id != user_id:
+        raise ValueError("Вы не состоите в этой очереди")
+    
+    # Обновляем активность очереди
+    queue.last_activity = datetime.now()
+    db.add(queue)
     
     now = datetime.now()
     new_message = ChatMessage(
@@ -133,7 +136,77 @@ async def send_message(
     )
     
     db.add(new_message)
-    await db.flush()
-    await db.refresh(new_message)
+    db.commit()
+    db.refresh(new_message)
     
     return new_message
+
+def get_queue_messages(db: Session, queue_id: int, user_id: int):
+    queue = db.execute(select(Queue).where(Queue.q_id == queue_id)).scalar_one_or_none()
+    if not queue:
+        raise ValueError("Очередь не найдена")
+    
+    participants = queue.q_sequence if queue.q_sequence else []
+    if user_id not in participants and queue.q_creator_id != user_id:
+        raise ValueError("Вы не состоите в этой очереди")
+    
+    messages = db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.q_id == queue_id)
+        .order_by(ChatMessage.m_date, ChatMessage.m_time)
+    ).scalars().all()
+    
+    result = []
+    for msg in messages:
+        user = db.execute(select(User).where(User.u_id == msg.u_id)).scalar_one()
+        result.append({
+            "m_id": msg.m_id,
+            "user_name": f"{user.u_name} {user.u_surname}",
+            "user_id": msg.u_id,
+            "text": msg.m_text,
+            "date": str(msg.m_date),
+            "time": str(msg.m_time)
+        })
+    return result
+
+def get_queue_by_id(db: Session, queue_id: int):
+    queue = db.execute(select(Queue).where(Queue.q_id == queue_id)).scalar_one_or_none()
+    if not queue:
+        return None
+    
+    return {
+        "q_id": queue.q_id,
+        "q_name": queue.q_name,
+        "q_describe": queue.q_describe,
+        "participants_count": len(queue.q_sequence) if queue.q_sequence else 0,
+        "participants": queue.q_sequence if queue.q_sequence else [],
+        "last_activity": queue.last_activity.isoformat() if queue.last_activity else None
+    }
+
+def delete_queue(db: Session, queue_id: int):
+    queue = db.execute(select(Queue).where(Queue.q_id == queue_id)).scalar_one_or_none()
+    if queue:
+        db.delete(queue)
+        db.commit()
+        return True
+    return False
+
+def cleanup_empty_queues(db: Session):
+    ten_minutes_ago = datetime.now() - timedelta(minutes=10)
+    
+    queues_to_delete = db.execute(
+        select(Queue).where(
+            Queue.last_activity < ten_minutes_ago,
+            Queue.q_sequence == []  # Пустая очередь
+        )
+    ).scalars().all()
+    
+    deleted_count = 0
+    for queue in queues_to_delete:
+        db.delete(queue)
+        deleted_count += 1
+    
+    if deleted_count > 0:
+        db.commit()
+    
+    return deleted_count

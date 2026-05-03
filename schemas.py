@@ -35,3 +35,29 @@ class MessageResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+class UserRegister(BaseModel):
+    u_name: str
+    u_surname: str
+    u_mail: str
+    u_pswrd: str
+
+class UserLogin(BaseModel):
+    u_mail: str
+    u_pswrd: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    user_id: int
+    user_name: str
+
+class UserResponse(BaseModel):
+    u_id: int
+    u_name: str
+    u_surname: str
+    u_mail: str
+    
+    class Config:
+        from_attributes = True
